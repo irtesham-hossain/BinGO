@@ -181,7 +181,7 @@ if not args.no_web:
             ip = s_.getsockname()[0]; s_.close()
         except OSError:
             ip = "<pi-address>"
-        print(f"Web page: http://{ip}:{args.web_port}")
+        print(f"Web page: http://{socket.gethostname()}.local:{args.web_port}   or   http://{ip}:{args.web_port}")
     except OSError as e:
         print("Web page could not start:", e)
         web = None
