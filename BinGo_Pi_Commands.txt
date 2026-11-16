@@ -1,0 +1,150 @@
+BinGo: Raspberry Pi commands
+============================
+Replace USER with your Pi username (find it with: whoami)
+Replace YOURNAME/REPO with your GitHub username and repository name.
+Lines starting with # are notes, do not type them.
+
+
+1. FIRST TIME SETUP (do once)
+-----------------------------
+sudo apt update
+sudo apt install -y git python3-opencv python3-serial python3-numpy python3-pip mpg123 alsa-utils espeak-ng
+pip install ai-edge-litert --break-system-packages
+pip install gTTS --break-system-packages
+
+# webcam and serial port access, then reboot
+sudo usermod -aG dialout,video USER
+sudo reboot
+
+
+2. GET THE CODE
+---------------
+# first time only
+cd ~
+git clone https://github.com/YOURNAME/REPO.git bingo
+cd ~/bingo
+
+# download the MoveNet model (skip if movenet_lightning.tflite is already in ~/bingo)
+wget -O movenet_lightning.tflite "https://tfhub.dev/google/lite-model/movenet/singlepose/lightning/tflite/float16/4?lite-format=tflite"
+
+# check the files are there
+ls ~/bingo
+# need: bingo_pi.py  bingo_web.py  bingo_speech.py  make_audio.py  drive_test.py  movenet_lightning.tflite
+
+# update the code later
+cd ~/bingo && git pull
+sudo systemctl restart bingo
+
+# if git pull says "local changes would be overwritten"
+git reset --hard && git pull
+
+
+3. BANGLA VOICE
+---------------
+# make the audio files (needs internet once)
+cd ~/bingo
+python3 make_audio.py
+
+# test the speaker (should say ধন্যবাদ)
+python3 bingo_pi.py --say
+
+# no sound? choose headphones: System Options > Audio > Headphones
+sudo raspi-config
+# set the volume
+alsamixer
+
+
+4. CHECK THE HARDWARE
+---------------------
+# is the ESP32 connected? (should show /dev/ttyUSB0 or /dev/ttyACM0)
+ls /dev/ttyUSB* /dev/ttyACM*
+
+# is the webcam connected? (should show /dev/video0)
+ls /dev/video*
+
+# see ESP32 messages (D,<cm> lines). Exit with Ctrl+]
+python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
+
+# Pi address for the web page
+hostname -I
+
+# is the Pi too hot or under-powered? (want throttled=0x0)
+vcgencmd get_throttled
+vcgencmd measure_temp
+
+
+5. TEST BY HAND
+---------------
+# always stop the auto-start program first
+sudo systemctl stop bingo
+cd ~/bingo
+
+# drive with the keyboard: hold W A D, Q to quit
+python3 drive_test.py
+
+# hand detection only, no ESP32
+python3 bingo_pi.py --test
+
+# full robot (web page at http://<pi-address>:8000)
+python3 bingo_pi.py
+
+# full robot with the lid servo
+python3 bingo_pi.py --lid
+
+# open and close the lid once
+python3 bingo_pi.py --lid-test
+
+# robot turns away from you? add --flip
+python3 bingo_pi.py --lid --flip
+
+# ESP32 on a different port
+python3 bingo_pi.py --port /dev/ttyACM0
+
+# stop the program: Ctrl+C
+
+
+6. START BY ITSELF ON BOOT (do once)
+------------------------------------
+sudo nano /etc/systemd/system/bingo.service
+
+# paste these lines (USER in 3 places), save with Ctrl+O Enter, exit with Ctrl+X
+# remove --lid if the servo is not fitted
+[Unit]
+Description=BinGo robot
+After=multi-user.target
+
+[Service]
+User=USER
+WorkingDirectory=/home/USER/bingo
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/python3 /home/USER/bingo/bingo_pi.py --lid
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+# then turn it on
+sudo systemctl daemon-reload
+sudo systemctl enable --now bingo
+
+
+7. CONTROL THE AUTO-START PROGRAM
+---------------------------------
+sudo systemctl status bingo          # is it running?
+journalctl -u bingo -f               # live output, Ctrl+C to stop watching
+journalctl -u bingo -b --no-pager | tail -n 30    # last 30 lines since boot
+sudo systemctl stop bingo            # stop it (before testing by hand)
+sudo systemctl start bingo           # start it
+sudo systemctl restart bingo         # restart after changing code
+sudo systemctl disable bingo         # stop it starting on boot
+
+
+8. FASTER AND SAFER
+-------------------
+# boot without the desktop (faster): System Options > Boot / Auto Login > Console Autologin
+sudo raspi-config
+
+# shut down safely before switching off power
+sudo shutdown now
+sudo reboot
