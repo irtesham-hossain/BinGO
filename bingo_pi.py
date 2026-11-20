@@ -30,6 +30,7 @@ ap.add_argument("--show", action="store_true")
 ap.add_argument("--flip", action="store_true")
 ap.add_argument("--test", action="store_true")
 ap.add_argument("--lid", action="store_true")
+ap.add_argument("--cam-only", action="store_true", help="arrival decided by the camera only, ignore the ultrasonic ARRIVED")
 ap.add_argument("--say", action="store_true")
 ap.add_argument("--lid-test", action="store_true")
 ap.add_argument("--no-web", action="store_true")
@@ -57,6 +58,8 @@ HOLD_S       = 0.6    # keep following this long if the hand drops out of view f
 DEADZONE     = 0.12   # person within this of the image centre counts as straight ahead
 LOWERED_S    = 3.0    # after arriving, hand down this long resets the robot for the next person
 SEND_EVERY   = 0.10   # seconds between serial commands
+ARRIVE_SW    = 0.30   # shoulder width (fraction of frame width) that means about 80 cm away. CALIBRATE: run with --show, stand at 80 cm, read sw
+ARRIVE_FRAMES = 4     # frames in a row at or above ARRIVE_SW before the camera says arrived
 SAY_COMING   = True   # say আসছি when the robot starts moving toward you
 
 # ---------------- serial link to the ESP32 (reconnects by itself) ----------------
@@ -157,6 +160,8 @@ def pose(rgb):
     interp.invoke()
     return interp.get_tensor(out["index"])[0, 0]      # 17 rows of (y, x, score)
 
+sw_now = [0.0]
+
 def raised_hand(kp):
     """Centre x (0 to 1) of the person if a hand is up, else None."""
     ls, rs, lw, rw = kp[5], kp[6], kp[9], kp[10]
@@ -166,7 +171,14 @@ def raised_hand(kp):
     if not up:
         return None
     xs = [p[1] for p in (ls, rs) if p[2] > SCORE_MIN]
+    if ls[2] > SCORE_MIN and rs[2] > SCORE_MIN:
+        sw_now[0] = abs(ls[1] - rs[1])      # bigger shoulder width means the person is closer
+    else:
+        sw_now[0] = 0.0
     return float(np.mean(xs))
+
+def manual_mode_check(w):
+    return w is not None and w.mode == "manual"
 
 # ---------------- web page ----------------
 web = None
@@ -213,6 +225,7 @@ arrived, no_hand_since = False, None
 said_coming = False
 last_send, fps_t, nframes, fps_now = 0.0, time.time(), 0, 0.0
 lid_is_open = False
+sw_smooth, near_count = 0.0, 0
 
 print("BinGo running. Raise a hand in front of the camera. Ctrl+C to stop.")
 send("C")
@@ -241,6 +254,19 @@ try:
             hand_count = 0
         tracking = (now - last_hand) < HOLD_S
 
+        # camera distance: shoulder width grows as the person gets closer
+        if x is not None:
+            sw_smooth = 0.6 * sw_smooth + 0.4 * sw_now[0]
+            near_count = near_count + 1 if sw_smooth >= ARRIVE_SW else 0
+        else:
+            near_count = 0
+        cam_near = near_count >= ARRIVE_FRAMES
+        if cam_near and not arrived and not manual_mode_check(web):
+            arrived, no_hand_since = True, None
+            print(f"ARRIVED (camera, sw={sw_smooth:.2f}):", bangla.speak("thanks"))
+            if args.lid:
+                send("O"); lid_is_open = True
+
         # buttons pressed on the web page
         manual = web is not None and web.mode == "manual"
         if web is not None:
@@ -264,7 +290,7 @@ try:
         for line in read_lines():
             if line.startswith("D,"):
                 esp_state["dist"] = line[2:]
-            if line == "ARRIVED" and manual:
+            if line == "ARRIVED" and (manual or args.cam_only):
                 continue
             if line == "ARRIVED" and not arrived:
                 arrived, no_hand_since = True, None
@@ -306,14 +332,14 @@ try:
             send(cmd)
             last_send = now
             if args.test or args.show:
-                print(f"hand={'yes' if tracking else 'no '} x={last_x:.2f} cmd={cmd}")
+                print(f"hand={'yes' if tracking else 'no '} x={last_x:.2f} sw={sw_smooth:.2f} cmd={cmd}")
 
         if args.show or web is not None:
             h, w = frame.shape[:2]
             for (y, xx, s) in kp:
                 if s > SCORE_MIN:
                     cv2.circle(frame, (int(xx * w), int(y * h)), 3, (0, 255, 0), -1)
-            label = ("MANUAL " if manual else "") + f"{cmd} hand={'yes' if tracking else 'no'}"
+            label = ("MANUAL " if manual else "") + f"{cmd} hand={'yes' if tracking else 'no'} sw={sw_smooth:.2f}"
             cv2.putText(frame, label, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         if web is not None:
             ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
